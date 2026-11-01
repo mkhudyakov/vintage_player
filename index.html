@@ -1,0 +1,837 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AE-35 Vector Player</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #000;
+    --ui: #c8d860;
+    --ui-dim: rgba(200, 216, 96, 0.45);
+    --line: #4ad7e6;
+    --num: #b48cff;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; }
+  body {
+    font-family: "Share Tech Mono", "Courier New", Courier, monospace;
+    color: var(--ui);
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+  }
+
+  #stage {
+    position: fixed; inset: 0; z-index: 1;
+    display: flex; align-items: center; justify-content: center;
+    background: #000;
+  }
+  #frame {
+    position: relative;
+    /* sized by JS to preserve aspect */
+  }
+  #gl { display: block; width: 100%; height: 100%; background: #000; }
+  video { display: none; }
+
+  /* ---- HAL readout overlay ---- */
+  #overlay {
+    position: absolute; inset: 0;
+    pointer-events: none;
+    font-size: calc(var(--fw, 1000px) * 0.0145);
+    line-height: 1.45;
+    text-shadow: 0 0 calc(var(--fw) * 0.002) rgba(200, 216, 96, 0.9),
+                 0 0 calc(var(--fw) * 0.006) rgba(200, 216, 96, 0.35);
+    opacity: 0.92;
+  }
+  #overlay.hidden { display: none; }
+  .ro { position: absolute; white-space: pre; }
+  #ro-top    { left: 20.5%; top: 20%; }
+  #ro-bottom { left: 20.5%; bottom: 14.5%; }
+  #ro-nums {
+    left: 47.5%; bottom: 14%;
+    color: var(--num);
+    font-size: calc(var(--fw) * 0.052);
+    letter-spacing: 0.08em;
+    word-spacing: 0.75em;
+    line-height: 1;
+    text-shadow: 0 0 calc(var(--fw) * 0.003) rgba(180, 140, 255, 0.9),
+                 0 0 calc(var(--fw) * 0.010) rgba(180, 140, 255, 0.45);
+  }
+
+  /* ---- drop hint ---- */
+  #hint {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 1.2em; text-align: center;
+    color: var(--line);
+    font-size: clamp(12px, 1.4vw, 20px);
+    text-shadow: 0 0 6px rgba(74, 215, 230, 0.8);
+    pointer-events: none;
+  }
+  #hint.hidden { display: none; }
+  #hint .big { font-size: 2.4em; letter-spacing: 0.3em; }
+  #hint .dim { color: var(--ui); opacity: 0.7; }
+
+  /* ---- control panel ---- */
+  #panel {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    padding: 10px 14px 12px;
+    background: linear-gradient(to top, rgba(0,0,0,0.92), rgba(0,0,0,0.75) 70%, rgba(0,0,0,0));
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 6px 18px;
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    transition: opacity .25s, transform .25s;
+    z-index: 10;
+  }
+  #panel.hidden { opacity: 0; transform: translateY(100%); pointer-events: none; }
+  #panel .row { grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  #panel label { display: flex; flex-direction: column; gap: 3px; }
+  #panel label span { display: flex; justify-content: space-between; opacity: 0.85; }
+  #panel label span b { font-weight: normal; color: var(--line); }
+  input[type=range] { width: 100%; accent-color: #4ad7e6; height: 14px; margin: 0; }
+  select, button, .filebtn {
+    font: inherit; text-transform: uppercase; letter-spacing: 0.1em;
+    background: #000; color: var(--ui);
+    border: 1px solid var(--ui-dim); border-radius: 0;
+    padding: 4px 10px; cursor: pointer;
+  }
+  button:hover, .filebtn:hover, select:hover { border-color: var(--line); color: var(--line); }
+  button.on { color: var(--line); border-color: var(--line); }
+  .filebtn input { display: none; }
+  #seek { flex: 1; min-width: 160px; }
+  #time { min-width: 110px; text-align: right; color: var(--line); font-variant-numeric: tabular-nums; }
+  #tip { grid-column: 1 / -1; opacity: 0.5; font-size: 10px; }
+  #togglePanel {
+    position: fixed; right: 12px; top: 10px; z-index: 11;
+    opacity: 0.35; transition: opacity .2s;
+  }
+  #togglePanel:hover { opacity: 1; }
+  input[type=text] {
+    font: inherit; text-transform: none; letter-spacing: 0.05em;
+    background: #000; color: var(--ui); border: 1px solid var(--ui-dim);
+    padding: 4px 8px; width: 340px; max-width: 50vw;
+  }
+  input[type=text]::placeholder { color: var(--ui-dim); }
+  input[type=text]:focus { outline: none; border-color: var(--line); }
+
+  /* ---- source dock: the real YouTube player; the big screen is a live capture of it ---- */
+  #dock {
+    position: fixed; right: 12px; top: 44px; z-index: 12;
+    width: 384px; height: 216px; background: #000;
+    border: 1px solid var(--ui-dim); display: none;
+    isolation: isolate; transform-style: flat;
+  }
+  #dock.show { display: block; }
+  /* hidden mode: the player sits behind the screen; Element Capture still sees it */
+  #dock.behind { z-index: 0; border-color: transparent; right: auto; top: auto; }
+  #dock.behind .tag { display: none; }
+  #dock .tag { position: absolute; left: -1px; top: -18px; font-size: 10px; color: var(--ui); opacity: 0.7; }
+  #ytwrap, #ytwrap iframe { width: 100%; height: 100%; border: 0; display: block; }
+</style>
+</head>
+<body>
+
+<div id="stage">
+  <div id="frame">
+    <canvas id="gl"></canvas>
+    <div id="overlay" class="hidden">
+      <div class="ro" id="ro-top"></div>
+      <div class="ro" id="ro-bottom"></div>
+      <div class="ro" id="ro-nums">00 00 00 00</div>
+    </div>
+    <div id="hint">
+      <div class="big">AE-35</div>
+      <div>Drop an MP4 / MOV / WEBM here, or paste a YouTube link below</div>
+      <div class="dim">OPEN a file · YOUTUBE plays a link · CAPTURE TAB grabs any other tab with sound<br>H hides the panel · F fullscreen · SPACE play/pause · T thin edges</div>
+    </div>
+  </div>
+</div>
+
+<video id="video" playsinline muted loop crossorigin="anonymous"></video>
+<div id="dock"><div class="tag">SOURCE</div><div id="ytwrap"></div></div>
+
+<button id="togglePanel" title="H">PANEL</button>
+
+<div id="panel">
+  <div class="row">
+    <label class="filebtn">OPEN<input id="file" type="file" accept="video/*,.mp4,.mov,.webm,.m4v,.mkv"></label>
+    <input id="yt" type="text" placeholder="https://www.youtube.com/watch?v=…" spellcheck="false">
+    <button id="ytgo">YOUTUBE</button>
+    <button id="cap">CAPTURE TAB</button>
+    <button id="stop">STOP</button>
+  </div>
+  <div class="row">
+    <button id="play">PLAY</button>
+    <input id="seek" type="range" min="0" max="1000" value="0">
+    <div id="time">00:00 / 00:00</div>
+    <button id="mute">SOUND</button>
+    <button id="overlayBtn" class="on">READOUT</button>
+    <button id="srcBtn" title="Show / hide the YouTube source window (S)" style="display:none">SOURCE</button>
+    <button id="beamBtn" class="on">BEAM</button>
+    <button id="fs">FULLSCREEN</button>
+    <select id="docksize" title="Size of the YouTube source window"><option value="256">DOCK S</option><option value="384" selected>DOCK M</option><option value="560">DOCK L</option></select>
+  </div>
+
+  <label><span>PALETTE</span>
+    <select id="palette">
+      <option value="hal">HAL · CYAN</option>
+      <option value="green">P1 · GREEN PHOSPHOR</option>
+      <option value="amber">P3 · AMBER</option>
+      <option value="white">P4 · WHITE</option>
+      <option value="purple">VIOLET</option>
+      <option value="cga">CGA · CYAN / MAGENTA</option>
+    </select>
+  </label>
+  <label><span>RESOLUTION <b id="v-res">640</b></span>
+    <select id="res">
+      <option value="320">320 · COARSE</option>
+      <option value="480">480</option>
+      <option value="640" selected>640</option>
+      <option value="960">960 · FINE</option>
+      <option value="1280">1280</option>
+      <option value="1920">1920 · NATIVE</option>
+    </select>
+  </label>
+  <label><span>THRESHOLD <b id="v-thr">0.12</b></span><input id="thr" type="range" min="0.02" max="0.6" step="0.005" value="0.12"></label>
+  <label><span>SOFTNESS <b id="v-soft">0.20</b></span><input id="soft" type="range" min="0.01" max="0.6" step="0.01" value="0.20"></label>
+  <label><span>SMOOTHING <b id="v-smooth">1.0</b></span><input id="smooth" type="range" min="0" max="3" step="0.1" value="1.0"></label>
+  <label><span>LINE WIDTH <b id="v-width">1.0</b></span><input id="width" type="range" min="1" max="5" step="0.1" value="1.0"></label>
+  <label><span>THIN EDGES</span><button id="thinBtn">OFF</button></label>
+  <label><span>LINE GAIN <b id="v-gain">1.6</b></span><input id="gain" type="range" min="0.3" max="4" step="0.05" value="1.6"></label>
+  <label><span>GLOW <b id="v-glow">0.9</b></span><input id="glow" type="range" min="0" max="3" step="0.05" value="0.9"></label>
+  <label><span>PERSISTENCE <b id="v-persist">0.55</b></span><input id="persist" type="range" min="0" max="0.97" step="0.01" value="0.55"></label>
+  <label><span>FILL <b id="v-fill">0.06</b></span><input id="fill" type="range" min="0" max="0.6" step="0.01" value="0.06"></label>
+  <label><span>SCANLINES <b id="v-scan">0.30</b></span><input id="scan" type="range" min="0" max="1" step="0.01" value="0.30"></label>
+  <label><span>FLICKER <b id="v-flicker">0.06</b></span><input id="flicker" type="range" min="0" max="0.4" step="0.01" value="0.06"></label>
+  <label><span>CURVATURE <b id="v-curve">0.06</b></span><input id="curve" type="range" min="0" max="0.25" step="0.01" value="0.06"></label>
+  <div id="tip">Edges are extracted with a Sobel filter on the GPU, then given phosphor persistence, bloom and a CRT raster. Nothing leaves your machine. YouTube: the real player runs hidden behind the screen and Chrome captures it into the renderer (choose "This Tab" when asked); its sound plays normally. SOURCE brings the player forward, e.g. to skip an ad.</div>
+</div>
+
+<script>
+(() => {
+'use strict';
+
+// ------------------------------------------------------------------ DOM
+const $ = id => document.getElementById(id);
+const video = $('video'), canvas = $('gl'), frame = $('frame'), overlay = $('overlay'), hint = $('hint');
+const panel = $('panel');
+const ui = {
+  palette: $('palette'), res: $('res'), thr: $('thr'), soft: $('soft'), smooth: $('smooth'), gain: $('gain'),
+  glow: $('glow'), persist: $('persist'), fill: $('fill'), scan: $('scan'), flicker: $('flicker'), curve: $('curve'),
+  width: $('width')
+};
+
+const PALETTES = {
+  hal:    { line: [0.29, 0.84, 0.90], glow: [0.20, 0.55, 0.75], ui: '#c8d860', num: '#b48cff', beam: [0.25, 0.38, 1.00] },
+  green:  { line: [0.45, 1.00, 0.45], glow: [0.10, 0.60, 0.20], ui: '#7dff7d', num: '#b8ffb8', beam: [0.20, 0.90, 0.40] },
+  amber:  { line: [1.00, 0.72, 0.20], glow: [0.70, 0.35, 0.05], ui: '#ffb833', num: '#ffd98a', beam: [1.00, 0.55, 0.15] },
+  white:  { line: [0.92, 0.95, 1.00], glow: [0.45, 0.50, 0.60], ui: '#d8dde6', num: '#ffffff', beam: [0.45, 0.55, 1.00] },
+  purple: { line: [0.75, 0.55, 1.00], glow: [0.40, 0.20, 0.70], ui: '#d8b4ff', num: '#4ad7e6', beam: [0.30, 0.90, 1.00] },
+  cga:    { line: [0.33, 1.00, 1.00], glow: [1.00, 0.33, 1.00], ui: '#55ffff', num: '#ff55ff', beam: [1.00, 0.33, 1.00] },
+};
+
+// ------------------------------------------------------------------ GL setup
+const gl = canvas.getContext('webgl', { antialias: false, alpha: false, preserveDrawingBuffer: false, premultipliedAlpha: false });
+if (!gl) { hint.innerHTML = '<div class="big">NO WEBGL</div><div>This browser cannot run the renderer.</div>'; return; }
+
+const VS = `
+attribute vec2 aPos; varying vec2 vUv;
+void main(){ vUv = aPos * 0.5 + 0.5; gl_Position = vec4(aPos, 0.0, 1.0); }`;
+
+const FS_LUM = `
+precision mediump float; varying vec2 vUv;
+uniform sampler2D uTex; uniform vec2 uTexel; uniform float uSmooth;
+float L(vec2 p){ vec3 c = texture2D(uTex, p).rgb; return dot(c, vec3(0.299, 0.587, 0.114)); }
+void main(){
+  float s = 0.0;
+  for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++)
+    s += L(vUv + vec2(float(i), float(j)) * uTexel * uSmooth);
+  gl_FragColor = vec4(vec3(s / 9.0), 1.0);
+}`;
+
+const FS_SOBEL = `
+precision mediump float; varying vec2 vUv;
+uniform sampler2D uTex; uniform vec2 uTexel; uniform float uLo, uHi, uThin;
+float l(vec2 p, float x, float y){ return texture2D(uTex, p + vec2(x, y) * uTexel).r; }
+vec2 grad(vec2 p){
+  float tl = l(p,-1., 1.), t = l(p,0., 1.), tr = l(p,1., 1.);
+  float ml = l(p,-1., 0.),                mr = l(p,1., 0.);
+  float bl = l(p,-1.,-1.), b = l(p,0.,-1.), br = l(p,1.,-1.);
+  return vec2(-tl - 2.0*ml - bl + tr + 2.0*mr + br, -bl - 2.0*b - br + tl + 2.0*t + tr);
+}
+void main(){
+  vec2 g = grad(vUv);
+  float m = length(g);
+  if (uThin > 0.5 && m > 0.001) {
+    // non-maximum suppression along the gradient: keep only the ridge of each edge
+    vec2 d = (g / m) * uTexel;
+    float m1 = length(grad(vUv + d)), m2 = length(grad(vUv - d));
+    if (m < m1 || m < m2) m *= 0.08;
+  }
+  float e = smoothstep(uLo, uHi, m);
+  gl_FragColor = vec4(vec3(e), 1.0);
+}`;
+
+const FS_ACCUM = `
+precision mediump float; varying vec2 vUv;
+uniform sampler2D uNew, uPrev; uniform float uDecay;
+void main(){
+  float n = texture2D(uNew, vUv).r;
+  float p = texture2D(uPrev, vUv).r * uDecay;
+  gl_FragColor = vec4(vec3(max(n, p)), 1.0);
+}`;
+
+const FS_DILATE = `
+precision mediump float; varying vec2 vUv;
+uniform sampler2D uTex; uniform vec2 uDir; uniform float uR;
+void main(){
+  float m = texture2D(uTex, vUv).r;
+  for (int i = 1; i <= 3; i++) {
+    float w = clamp(uR + 1.0 - float(i), 0.0, 1.0);
+    if (w <= 0.0) break;
+    m = max(m, texture2D(uTex, vUv + uDir * float(i)).r * w);
+    m = max(m, texture2D(uTex, vUv - uDir * float(i)).r * w);
+  }
+  gl_FragColor = vec4(vec3(m), 1.0);
+}`;
+
+const FS_BLUR = `
+precision mediump float; varying vec2 vUv;
+uniform sampler2D uTex; uniform vec2 uDir;
+void main(){
+  float w[5]; w[0]=0.227027; w[1]=0.1945946; w[2]=0.1216216; w[3]=0.054054; w[4]=0.016216;
+  float s = texture2D(uTex, vUv).r * w[0];
+  for (int i = 1; i < 5; i++) {
+    s += texture2D(uTex, vUv + uDir * float(i)).r * w[i];
+    s += texture2D(uTex, vUv - uDir * float(i)).r * w[i];
+  }
+  gl_FragColor = vec4(vec3(s), 1.0);
+}`;
+
+const FS_COMP = `
+precision mediump float; varying vec2 vUv;
+uniform sampler2D uEdge, uGlow, uLum;
+uniform vec3 uLine, uGlowCol, uBeamCol;
+uniform float uGain, uGlowAmt, uFill, uScan, uFlicker, uCurve, uBeam, uTime, uAspect, uScanPx;
+uniform vec2 uOut, uTexel;
+float hash(float n){ return fract(sin(n) * 43758.5453); }
+void main(){
+  // barrel curvature
+  vec2 c = vUv * 2.0 - 1.0;
+  float r2 = dot(c, c);
+  c *= 1.0 + uCurve * r2;
+  vec2 uv = c * 0.5 + 0.5;
+  float inside = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0);
+
+  vec2 px = uTexel * 0.3;
+  float e = 0.25 * ( texture2D(uEdge, uv + vec2( px.x,  px.y)).r + texture2D(uEdge, uv + vec2(-px.x,  px.y)).r
+                   + texture2D(uEdge, uv + vec2( px.x, -px.y)).r + texture2D(uEdge, uv + vec2(-px.x, -px.y)).r );
+  float g = texture2D(uGlow, uv).r;
+  float lum = texture2D(uLum, uv).r;
+
+  vec3 col = uLine * e * uGain
+           + uGlowCol * g * uGlowAmt
+           + uLine * lum * uFill * 0.6;
+
+  // scanning beam (the blue plane sweeping through the drawing)
+  if (uBeam > 0.0) {
+    vec2 p = (uv - 0.5) * vec2(uAspect, 1.0);
+    float ang = 0.9 + 0.35 * sin(uTime * 0.11);
+    vec2 n = vec2(cos(ang), sin(ang));
+    float off = 0.55 * sin(uTime * 0.23);
+    float d = dot(p, n) - off;
+    float hw = 0.035;
+    float band = smoothstep(hw, hw * 0.55, abs(d));
+    float stri = 0.75 + 0.25 * sin(dot(p, vec2(-n.y, n.x)) * 220.0 + uTime * 3.0);
+    float edgeHi = smoothstep(hw * 0.75, hw, abs(d)) * band;
+    col += uBeamCol * (band * 0.30 * stri + edgeHi * 0.9) * uBeam;
+  }
+
+  // raster
+  float row = gl_FragCoord.y / uScanPx;
+  float scan = 1.0 - uScan * 0.55 * (0.5 + 0.5 * sin(row * 3.14159265 * 2.0));
+  col *= scan;
+  // slot mask tint
+  float colm = mod(floor(gl_FragCoord.x / (uScanPx * 0.5)), 3.0);
+  col *= 1.0 - uScan * 0.12 * (colm == 1.0 ? 0.0 : 1.0);
+  // flicker
+  col *= 1.0 - uFlicker * (0.5 + 0.5 * sin(uTime * 47.0 + uv.y * 9.0)) * hash(floor(uTime * 24.0));
+  // vignette
+  col *= 1.0 - 0.45 * pow(r2 * 0.5, 1.3);
+  // soft clamp like phosphor saturation
+  col = 1.0 - exp(-col * 1.15);
+  col = pow(col, vec3(0.92));
+  gl_FragColor = vec4(col * inside, 1.0);
+}`;
+
+function compile(type, src) {
+  const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+function program(fs) {
+  const p = gl.createProgram();
+  gl.attachShader(p, compile(gl.VERTEX_SHADER, VS));
+  gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  const u = {};
+  const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+  for (let i = 0; i < n; i++) { const info = gl.getActiveUniform(p, i); u[info.name] = gl.getUniformLocation(p, info.name); }
+  return { p, u };
+}
+const P = { lum: program(FS_LUM), sobel: program(FS_SOBEL), accum: program(FS_ACCUM), dilate: program(FS_DILATE), blur: program(FS_BLUR), comp: program(FS_COMP) };
+
+const quad = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+function bindQuad(prog) {
+  const loc = gl.getAttribLocation(prog.p, 'aPos');
+  gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+}
+
+function makeTex(w, h) {
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  return t;
+}
+function makeFbo(w, h) {
+  const tex = makeTex(w, h);
+  const fbo = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  return { fbo, tex, w, h };
+}
+const videoTex = makeTex(1, 1);
+
+let F = null;           // framebuffers, rebuilt when resolution/aspect changes
+let accIdx = 0;
+function buildFbos(w, h) {
+  if (F) for (const k of Object.keys(F)) { gl.deleteFramebuffer(F[k].fbo); gl.deleteTexture(F[k].tex); }
+  const bw = Math.max(2, w >> 1), bh = Math.max(2, h >> 1);
+  F = {
+    lum: makeFbo(w, h), edge: makeFbo(w, h),
+    acc0: makeFbo(w, h), acc1: makeFbo(w, h),
+    dilA: makeFbo(w, h), dilB: makeFbo(w, h),
+    blurA: makeFbo(bw, bh), blurB: makeFbo(bw, bh),
+  };
+}
+
+function drawTo(target, prog, setup) {
+  gl.bindFramebuffer(gl.FRAMEBUFFER, target ? target.fbo : null);
+  gl.viewport(0, 0, target ? target.w : canvas.width, target ? target.h : canvas.height);
+  gl.useProgram(prog.p);
+  bindQuad(prog);
+  setup(prog.u);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+function tex(unit, t, loc) { gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, t); gl.uniform1i(loc, unit); }
+
+// ------------------------------------------------------------------ state
+const S = {
+  palette: 'hal', res: 640, thr: 0.12, soft: 0.20, smooth: 1.0, gain: 1.6, glow: 0.9,
+  persist: 0.55, fill: 0.06, scan: 0.30, flicker: 0.06, curve: 0.06, beam: 1, overlay: true, width: 1.0, thin: 0,
+};
+let vw = 16, vh = 9, procW = 0, procH = 0, haveVideo = false, fileName = 'NO SIGNAL';
+let source = null;            // { kind: 'file' | 'yt' | 'tab', live }
+let ytPlayer = null, ytState = -1;
+const isYT = () => source && source.kind === 'yt';
+function curTime() { return isYT() ? (ytPlayer && ytPlayer.getCurrentTime ? ytPlayer.getCurrentTime() : 0) : (video.currentTime || 0); }
+function duration() { return isYT() ? (ytPlayer && ytPlayer.getDuration ? ytPlayer.getDuration() : 0) : (isFinite(video.duration) ? video.duration : 0); }
+function isPlaying() { return isYT() ? ytState === 1 : !video.paused; }
+
+function applyPalette() {
+  const p = PALETTES[S.palette];
+  document.documentElement.style.setProperty('--ui', p.ui);
+  document.documentElement.style.setProperty('--ui-dim', p.ui + '73');
+  document.documentElement.style.setProperty('--line', rgb(p.line));
+  document.documentElement.style.setProperty('--num', p.num);
+  overlay.style.textShadow = `0 0 calc(var(--fw) * 0.002) ${p.ui}, 0 0 calc(var(--fw) * 0.006) ${p.ui}59`;
+}
+const rgb = v => `rgb(${v.map(x => Math.round(x * 255)).join(',')})`;
+
+for (const k of Object.keys(ui)) {
+  const el = ui[k];
+  const sync = () => {
+    S[k] = el.tagName === 'SELECT' && k !== 'palette' ? +el.value : (el.type === 'range' ? +el.value : el.value);
+    const v = $('v-' + k); if (v) v.textContent = el.type === 'range' ? (+el.value).toFixed(el.step.includes('.') ? el.step.split('.')[1].length : 0) : el.value;
+    if (k === 'palette') applyPalette();
+    if (k === 'res') layout(true);
+  };
+  el.addEventListener('input', sync); sync();
+}
+
+// ------------------------------------------------------------------ layout
+function layout(force) {
+  const W = window.innerWidth, H = window.innerHeight;
+  const pad = 0.0;
+  let fw = W * (1 - pad), fh = fw * vh / vw;
+  if (fh > H * (1 - pad)) { fh = H * (1 - pad); fw = fh * vw / vh; }
+  frame.style.width = fw + 'px'; frame.style.height = fh + 'px';
+  frame.style.setProperty('--fw', fw + 'px');
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const cw = Math.round(fw * dpr), ch = Math.round(fh * dpr);
+  if (canvas.width !== cw || canvas.height !== ch) { canvas.width = cw; canvas.height = ch; }
+  const pw = S.res, ph = Math.max(2, Math.round(S.res * vh / vw));
+  if (force || pw !== procW || ph !== procH || !F) { procW = pw; procH = ph; buildFbos(pw, ph); }
+}
+window.addEventListener('resize', () => layout(false));
+
+// ------------------------------------------------------------------ render loop
+let lastT = 0;
+function render(now) {
+  requestAnimationFrame(render);
+  const t = now / 1000;
+  const dt = Math.min(0.1, t - lastT || 0.016); lastT = t;
+  if (!F) layout(true);
+
+  if (haveVideo && video.readyState >= 2) {
+    gl.bindTexture(gl.TEXTURE_2D, videoTex);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+  }
+
+  // 1. luminance, pre-smoothed
+  drawTo(F.lum, P.lum, u => {
+    tex(0, videoTex, u.uTex);
+    gl.uniform2f(u.uTexel, 1 / (video.videoWidth || procW), 1 / (video.videoHeight || procH));
+    gl.uniform1f(u.uSmooth, S.smooth);
+  });
+  // 2. sobel edges
+  drawTo(F.edge, P.sobel, u => {
+    tex(0, F.lum.tex, u.uTex);
+    gl.uniform2f(u.uTexel, 1 / F.lum.w, 1 / F.lum.h);
+    gl.uniform1f(u.uLo, S.thr);
+    gl.uniform1f(u.uHi, S.thr + S.soft);
+    gl.uniform1f(u.uThin, S.thin);
+  });
+  // 3. phosphor persistence (frame-rate independent decay)
+  const prev = accIdx ? F.acc1 : F.acc0, cur = accIdx ? F.acc0 : F.acc1; accIdx ^= 1;
+  const decay = S.persist > 0 ? Math.pow(S.persist, dt * 30) : 0;
+  drawTo(cur, P.accum, u => {
+    tex(0, F.edge.tex, u.uNew); tex(1, prev.tex, u.uPrev);
+    gl.uniform1f(u.uDecay, haveVideo ? decay : 0);
+  });
+  // 3b. line width (separable dilation, fractional radius)
+  let lines = cur;
+  if (S.width > 1.01) {
+    const R = (S.width - 1) / 2;
+    drawTo(F.dilA, P.dilate, u => { tex(0, cur.tex, u.uTex); gl.uniform2f(u.uDir, 1 / F.dilA.w, 0); gl.uniform1f(u.uR, R); });
+    drawTo(F.dilB, P.dilate, u => { tex(0, F.dilA.tex, u.uTex); gl.uniform2f(u.uDir, 0, 1 / F.dilB.h); gl.uniform1f(u.uR, R); });
+    lines = F.dilB;
+  }
+  // 4. bloom (two-pass separable)
+  drawTo(F.blurA, P.blur, u => { tex(0, lines.tex, u.uTex); gl.uniform2f(u.uDir, 1.6 / F.blurA.w, 0); });
+  drawTo(F.blurB, P.blur, u => { tex(0, F.blurA.tex, u.uTex); gl.uniform2f(u.uDir, 0, 1.6 / F.blurB.h); });
+  // 5. composite to screen
+  const pal = PALETTES[S.palette];
+  drawTo(null, P.comp, u => {
+    tex(0, lines.tex, u.uEdge); tex(1, F.blurB.tex, u.uGlow); tex(2, F.lum.tex, u.uLum);
+    gl.uniform3fv(u.uLine, pal.line); gl.uniform3fv(u.uGlowCol, pal.glow); gl.uniform3fv(u.uBeamCol, pal.beam);
+    gl.uniform1f(u.uGain, S.gain); gl.uniform1f(u.uGlowAmt, S.glow); gl.uniform1f(u.uFill, S.fill);
+    gl.uniform1f(u.uScan, S.scan); gl.uniform1f(u.uFlicker, S.flicker); gl.uniform1f(u.uCurve, S.curve);
+    gl.uniform1f(u.uBeam, haveVideo ? S.beam : 0); gl.uniform1f(u.uTime, t); gl.uniform1f(u.uAspect, vw / vh);
+    gl.uniform2f(u.uOut, canvas.width, canvas.height);
+    gl.uniform2f(u.uTexel, 1 / lines.w, 1 / lines.h);
+    gl.uniform1f(u.uScanPx, Math.max(2, Math.round(1.5 * Math.min(window.devicePixelRatio || 1, 2))));
+  });
+
+  updateReadout(t);
+}
+requestAnimationFrame(render);
+
+// ------------------------------------------------------------------ HAL readout
+const roTop = $('ro-top'), roBottom = $('ro-bottom'), roNums = $('ro-nums');
+let numsAt = 0, nums = [87, 15, 47, 32], seekDragging = false;
+const pad2 = n => String(n).padStart(2, '0');
+const pad4 = n => String(n).padStart(4, '0');
+function fmt(s) { s = Math.max(0, s | 0); return pad2((s / 60) | 0) + ':' + pad2(s % 60); }
+function updateReadout(t) {
+  if (!S.overlay || !haveVideo) return;
+  const ct = curTime(), dur = duration(), live = source && source.live;
+  const frm = Math.floor(ct * 24);
+  const rad = (0.0045 + 0.0001 * Math.sin(t * 0.7)).toFixed(4).slice(1);
+  roTop.textContent =
+    `DIS; (AE-35);\n` +
+    `INJ. ${rad}+ RAD.; ${pad4(frm % 10000)}D; ${isPlaying() ? 'SECURE' : 'HOLD'}; MASS FACT. ${pad4(Math.round(vw * vh / 1000) % 10000)} DET.;`;
+  roBottom.textContent =
+    `PT.NO. ${fileName.slice(0, 18)}(ALIGN.);\n` +
+    `VIS.CO-ORD. +.${pad4((ct * 10) | 0)}`;
+  if (t - numsAt > 0.45) {
+    numsAt = t;
+    nums = nums.map((n, i) => (Math.random() < 0.6 ? (n + 7 + i * 13 + ((Math.random() * 40) | 0)) % 100 : n));
+    roNums.textContent = nums.map(pad2).join(' ');
+  }
+  if (!seekDragging && !live) $('seek').value = dur ? (ct / dur * 1000) | 0 : 0;
+  $('time').textContent = live ? 'LIVE' : `${fmt(ct)} / ${fmt(dur)}`;
+  $('play').textContent = isPlaying() ? 'PAUSE' : 'PLAY';
+}
+
+// ------------------------------------------------------------------ sources
+function hintMsg(html) { if (html == null) { hint.classList.add('hidden'); return; } hint.innerHTML = '<div class="big">AE-35</div><div>' + html + '</div>'; hint.classList.remove('hidden'); }
+function cleanName(n) { return (n || 'SRC').replace(/\.[^.]+$/, '').toUpperCase().replace(/[^A-Z0-9\-_. ]/g, '').trim() || 'SRC'; }
+
+function stopAll() {
+  if (video.srcObject) { video.srcObject.getTracks().forEach(t => t.stop()); video.srcObject = null; }
+  if (video.src) { video.pause(); video.removeAttribute('src'); video.load(); }
+  if (ytPlayer) { try { ytPlayer.destroy(); } catch (e) {} ytPlayer = null; ytState = -1; }
+  $('ytwrap').innerHTML = '';
+  $('dock').classList.remove('show', 'behind'); dockHidden = false;
+  $('srcBtn').style.display = 'none';
+  source = null; haveVideo = false; fileName = 'NO SIGNAL';
+  overlay.classList.add('hidden');
+  $('seek').disabled = false;
+  hintMsg('No signal. Open a file, paste a YouTube link, or capture a tab.');
+}
+
+function loadSource(url, name) {
+  stopAll();
+  source = { kind: 'file', live: false };
+  fileName = cleanName(name || url.split('/').pop());
+  video.muted = ytMuted;
+  video.src = url;
+  video.load();
+  video.play().catch(() => {});
+}
+function onVideoReady() {
+  vw = video.videoWidth || 16; vh = video.videoHeight || 9;
+  haveVideo = true;
+  hint.classList.add('hidden');
+  overlay.classList.toggle('hidden', !S.overlay);
+  layout(true);
+}
+video.addEventListener('loadedmetadata', onVideoReady);
+video.addEventListener('resize', () => { if (video.videoWidth && (video.videoWidth !== vw || video.videoHeight !== vh)) onVideoReady(); });
+
+$('file').addEventListener('change', e => {
+  const f = e.target.files[0]; if (f) loadSource(URL.createObjectURL(f), f.name);
+});
+['dragenter', 'dragover'].forEach(ev => document.addEventListener(ev, e => { e.preventDefault(); }));
+document.addEventListener('drop', e => {
+  e.preventDefault();
+  const f = e.dataTransfer.files && e.dataTransfer.files[0];
+  if (f) { loadSource(URL.createObjectURL(f), f.name); return; }
+  const t = e.dataTransfer.getData('text');
+  if (t && parseYT(t)) { $('yt').value = t; openYouTube(t); }
+});
+
+// --- YouTube: the real player is embedded in the dock; Chrome captures this tab cropped to the dock
+function parseYT(url) {
+  url = (url || '').trim();
+  const m = url.match(/(?:v=|youtu\.be\/|shorts\/|embed\/|live\/|\/v\/)([A-Za-z0-9_-]{11})/);
+  if (m) return m[1];
+  return /^[A-Za-z0-9_-]{11}$/.test(url) ? url : null;
+}
+let canRestrict = !!window.RestrictionTarget;
+let dockHidden = false;
+function layoutDock() {
+  const dock = $('dock');
+  if (dockHidden) {                   // full-size 16:9 rectangle behind the screen → sharper capture
+    const W = window.innerWidth, H = window.innerHeight;
+    let w = W, h = w * 9 / 16; if (h > H) { h = H; w = h * 16 / 9; }
+    dock.style.width = Math.round(w) + 'px'; dock.style.height = Math.round(h) + 'px';
+    dock.style.left = Math.round((W - w) / 2) + 'px'; dock.style.top = Math.round((H - h) / 2) + 'px';
+  } else {
+    const w = +$('docksize').value;
+    dock.style.width = w + 'px'; dock.style.height = Math.round(w * 9 / 16) + 'px';
+    dock.style.left = ''; dock.style.top = '';
+  }
+}
+function setDockHidden(h) {
+  dockHidden = canRestrict && h;
+  $('dock').classList.toggle('behind', dockHidden);
+  $('srcBtn').classList.toggle('on', !dockHidden);
+  $('srcBtn').textContent = dockHidden ? 'SOURCE' : 'SOURCE ON';
+  layoutDock();
+}
+$('srcBtn').addEventListener('click', () => setDockHidden(!dockHidden));
+window.addEventListener('resize', layoutDock);
+let ytApiPromise = null;
+function loadYTApi() {
+  if (window.YT && window.YT.Player) return Promise.resolve();
+  if (!ytApiPromise) ytApiPromise = new Promise((res, rej) => {
+    window.onYouTubeIframeAPIReady = () => res();
+    const sc = document.createElement('script'); sc.src = 'https://www.youtube.com/iframe_api';
+    sc.onerror = () => rej(new Error('Cannot load the YouTube player API (offline?)'));
+    document.head.appendChild(sc);
+  });
+  return ytApiPromise;
+}
+async function openYouTube(url) {
+  const id = parseYT(url);
+  if (!id) { hintMsg('That does not look like a YouTube link.'); return; }
+  $('yt').blur(); window.focus();
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) { hintMsg('This browser cannot capture tabs. Use Chrome.'); return; }
+  if (location.protocol === 'file:') {
+    stopAll();
+    hintMsg('YouTube refuses to embed into a page opened from disk (error 153).<br><span class="dim">Double-click <b>start.command</b> in the player folder: it serves the player at http://localhost and opens Chrome. Files and CAPTURE TAB work here already.</span>');
+    return;
+  }
+  stopAll();
+  const dock = $('dock'); dock.classList.add('show');
+  hintMsg('In the Chrome dialog choose <b>This Tab</b> and press <b>Share</b>.<br><span class="dim">The real YouTube player is captured behind the screen. Press SOURCE (or S) to bring it forward.</span>');
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getDisplayMedia({
+      video: { frameRate: { ideal: 30, max: 60 }, displaySurface: 'browser' },
+      audio: false, preferCurrentTab: true, surfaceSwitching: 'exclude', monitorTypeSurfaces: 'exclude',
+    });
+    const track = stream.getVideoTracks()[0];
+    let restricted = false, why = '';
+    if (window.RestrictionTarget && typeof track.restrictTo === 'function') {
+      try { await track.restrictTo(await RestrictionTarget.fromElement(dock)); restricted = true; }
+      catch (e) { why = (e && e.message) || String(e); console.warn('Element Capture failed, falling back to crop', e); }
+    } else why = 'this Chrome has no Element Capture API';
+    canRestrict = restricted;
+    if (!restricted && window.CropTarget && typeof track.cropTo === 'function') {
+      await track.cropTo(await CropTarget.fromElement(dock));
+    }
+    if (!restricted) setTimeout(() => hintMsg('The source window must stay visible: ' + why + '.<br><span class="dim">Chrome 132+ can hide it. This message disappears in a moment.</span>'), 0), setTimeout(() => { if (isYT()) hint.classList.add('hidden'); }, 9000);
+    $('srcBtn').style.display = restricted ? '' : 'none';
+    setDockHidden(restricted);           // hide the player behind the screen when Chrome can capture it occluded
+    track.addEventListener('ended', stopAll);
+  } catch (err) {
+    stopAll(); hintMsg('Capture cancelled or refused.<br><span class="dim">' + ((err && err.message) || '') + '</span>'); return;
+  }
+  source = { kind: 'yt', live: false };
+  fileName = 'YT ' + id.toUpperCase();
+  video.muted = true;                       // sound comes straight from the embedded player
+  video.srcObject = stream; video.play().catch(() => {});
+  try { await loadYTApi(); } catch (err) { stopAll(); hintMsg(err.message); return; }
+  if (!isYT()) return;
+  $('ytwrap').innerHTML = '<div id="ytp"></div>';
+  const vars = { autoplay: 1, playsinline: 1, rel: 0, modestbranding: 1, controls: 1, iv_load_policy: 3 };
+  if (location.origin && location.origin.startsWith('http')) vars.origin = location.origin;
+  ytPlayer = new YT.Player('ytp', {
+    videoId: id, width: '100%', height: '100%', playerVars: vars,
+    events: {
+      onReady: e => {
+        e.target.setVolume(100); ytMuted ? e.target.mute() : e.target.unMute();
+        e.target.playVideo();
+        setTimeout(() => { if (document.activeElement && document.activeElement.tagName === 'IFRAME') { document.activeElement.blur(); window.focus(); } }, 300);
+        const t = e.target.getVideoData && e.target.getVideoData().title;
+        if (t) fileName = cleanName(t);
+        hint.classList.add('hidden');
+      },
+      onStateChange: e => { ytState = e.data; },
+      onError: e => hintMsg('YouTube refused to embed this video (error ' + e.data + ').<br><span class="dim">Open it in another tab and use CAPTURE TAB instead.</span>'),
+    },
+  });
+}
+$('ytgo').addEventListener('click', () => openYouTube($('yt').value));
+$('yt').addEventListener('keydown', e => { if (e.key === 'Enter') openYouTube($('yt').value); });
+$('docksize').addEventListener('change', layoutDock);
+
+// --- capture any other browser tab, with its audio
+async function captureTab() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) { hintMsg('This browser cannot capture tabs. Use Chrome.'); return; }
+  stopAll();
+  hintMsg('Pick the tab that plays the video and tick <b>Also share tab audio</b>.');
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getDisplayMedia({
+      video: { frameRate: { ideal: 30, max: 60 } },
+      audio: { suppressLocalAudioPlayback: true, echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+      selfBrowserSurface: 'exclude', systemAudio: 'exclude', surfaceSwitching: 'include',
+    });
+  } catch (err) { stopAll(); hintMsg('Capture cancelled or refused.<br><span class="dim">' + ((err && err.message) || '') + '</span>'); return; }
+  const track = stream.getVideoTracks()[0];
+  track.addEventListener('ended', stopAll);
+  source = { kind: 'tab', live: true };
+  fileName = 'TAB ' + (stream.getAudioTracks().length ? 'AV' : 'VIDEO');
+  $('seek').disabled = true;
+  video.muted = ytMuted;                    // captured tab audio plays through this page
+  video.srcObject = stream; video.play().catch(() => {});
+  hint.classList.add('hidden');
+}
+$('cap').addEventListener('click', captureTab);
+$('stop').addEventListener('click', stopAll);
+video.addEventListener('error', () => { if (source && source.kind === 'file') hintMsg('Cannot decode this file in the browser.<br><span class="dim">Try MP4 (H.264), WebM or MOV (H.264).</span>'); });
+
+// ------------------------------------------------------------------ controls
+const togglePlay = () => {
+  if (!source) return;
+  if (isYT()) { if (ytPlayer) (ytState === 1 ? ytPlayer.pauseVideo() : ytPlayer.playVideo()); }
+  else video.paused ? video.play() : video.pause();
+};
+function seekTo(t) {
+  if (!source || source.live) return;
+  if (isYT()) { if (ytPlayer && ytPlayer.seekTo) ytPlayer.seekTo(Math.max(0, t), true); }
+  else video.currentTime = Math.max(0, t);
+}
+$('play').addEventListener('click', togglePlay);
+let ytMuted = false;                        // one mute flag for every source
+function setMuted(m) {
+  ytMuted = m;
+  if (isYT()) { video.muted = true; if (ytPlayer && ytPlayer.mute) (m ? ytPlayer.mute() : ytPlayer.unMute()); }
+  else video.muted = m;
+  $('mute').textContent = m ? 'MUTED' : 'SOUND'; $('mute').classList.toggle('on', m);
+}
+$('mute').addEventListener('click', () => setMuted(!ytMuted));
+$('overlayBtn').addEventListener('click', () => { S.overlay = !S.overlay; $('overlayBtn').classList.toggle('on', S.overlay); overlay.classList.toggle('hidden', !S.overlay || !haveVideo); });
+$('beamBtn').addEventListener('click', () => { S.beam = S.beam ? 0 : 1; $('beamBtn').classList.toggle('on', !!S.beam); });
+$('thinBtn').addEventListener('click', () => { S.thin = S.thin ? 0 : 1; $('thinBtn').classList.toggle('on', !!S.thin); $('thinBtn').textContent = S.thin ? 'ON' : 'OFF'; });
+function toggleFullscreen() {
+  if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+  const p = document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen({ navigationUI: 'hide' });
+  if (p && p.catch) p.catch(err => hintMsg('Fullscreen refused: ' + (err && err.message || err) + '<br><span class="dim">Click the FULLSCREEN button or double-click the screen.</span>'));
+}
+$('fs').addEventListener('click', toggleFullscreen);
+$('stage').addEventListener('dblclick', e => { if (e.target.closest('#panel')) return; toggleFullscreen(); });
+document.addEventListener('fullscreenchange', () => { setTimeout(() => layout(false), 50); if (isYT()) layoutDock(); });
+const seek = $('seek');
+seek.addEventListener('pointerdown', () => seekDragging = true);
+seek.addEventListener('input', () => { const d = duration(); if (d) seekTo(seek.value / 1000 * d); });
+seek.addEventListener('change', () => { const d = duration(); if (d) seekTo(seek.value / 1000 * d); seekDragging = false; });
+const togglePanelFn = () => panel.classList.toggle('hidden');
+$('togglePanel').addEventListener('click', togglePanelFn);
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' && e.target.type === 'text') { if (e.key === 'Escape') e.target.blur(); return; }
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') { if (e.code !== 'Space') return; e.target.blur(); }
+  switch (e.code) {
+    case 'Space': e.preventDefault(); togglePlay(); break;
+    case 'KeyH': togglePanelFn(); break;
+    case 'KeyF': $('fs').click(); break;
+    case 'KeyO': $('overlayBtn').click(); break;
+    case 'KeyB': $('beamBtn').click(); break;
+    case 'KeyT': $('thinBtn').click(); break;
+    case 'KeyM': setMuted(!ytMuted); break;
+    case 'KeyS': if (isYT()) setDockHidden(!dockHidden); break;
+    case 'ArrowRight': seekTo(curTime() + (e.shiftKey ? 30 : 5)); break;
+    case 'ArrowLeft': seekTo(curTime() - (e.shiftKey ? 30 : 5)); break;
+    case 'Digit1': case 'Digit2': case 'Digit3': case 'Digit4': case 'Digit5': case 'Digit6': {
+      const keys = Object.keys(PALETTES); const i = +e.code.slice(-1) - 1;
+      if (keys[i]) { ui.palette.value = keys[i]; ui.palette.dispatchEvent(new Event('input')); }
+      break;
+    }
+  }
+});
+
+// ------------------------------------------------------------------ autoload via ?src=
+const params = new URLSearchParams(location.search);
+if (params.get('src')) { setMuted(true); loadSource(params.get('src')); }
+if (params.get('yt')) $('yt').value = params.get('yt');
+if (params.get('nopanel')) panel.classList.add('hidden');
+for (const k of ['res', 'thr', 'soft', 'smooth', 'gain', 'glow', 'persist', 'fill', 'scan', 'flicker', 'curve', 'width', 'palette']) {
+  if (params.get(k) != null && ui[k]) { ui[k].value = params.get(k); ui[k].dispatchEvent(new Event('input')); }
+}
+if (params.get('thin') === '1') $('thinBtn').click();
+layout(true);
+})();
+</script>
+</body>
+</html>
